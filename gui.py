@@ -177,6 +177,11 @@ class SecureFileApp(tk.Tk):
             messagebox.showerror("Error", str(exc))
             return
 
+        if output_path.exists():
+            if not messagebox.askyesno("Overwrite?", f"The output file already exists:\n{output_path}\n\nDo you want to overwrite it?"):
+                self.status_var.set("Operation cancelled: output file already exists.")
+                return
+
         self._set_busy(True)
         self.status_var.set(f"Working on {action}...")
 

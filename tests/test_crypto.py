@@ -96,6 +96,27 @@ class CryptoCoreTests(unittest.TestCase):
             self.assertTrue(out["success"], out.get("message"))
             self.assertEqual(Path(tmpdir, "empty.out").read_bytes(), b"")
 
+    def test_output_file_conflict_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = Path(tmpdir) / "sample.bin"
+            src.write_bytes(b"abc")
+
+            output = Path(tmpdir) / "sample.bin.enc"
+            output.write_bytes(b"existing-content")
+
+            result = encrypt_file(str(src), str(output), "Pass!123")
+            self.assertFalse(result["success"])
+            self.assertIn("Output file already exists", result["message"])
+
+            enc = Path(tmpdir) / "encrypted.enc"
+            encrypt_file(str(src), str(enc), "Pass!123")
+
+            decrypted_target = Path(tmpdir) / "already_here.txt"
+            decrypted_target.write_bytes(b"old data")
+            result2 = decrypt_file(str(enc), str(decrypted_target), "Pass!123")
+            self.assertFalse(result2["success"])
+            self.assertIn("Output file already exists", result2["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

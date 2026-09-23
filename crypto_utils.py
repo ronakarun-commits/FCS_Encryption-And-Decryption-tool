@@ -202,6 +202,9 @@ def encrypt_file(input_path: str, output_path: str, password: str) -> Dict[str, 
         header = create_sfet_header(VERSION, KDF_ID, KDF_ITERATIONS, salt, nonce, filename_bytes, len(plaintext))
 
         output_file = Path(output_path)
+        if output_file.exists():
+            return {"success": False, "message": "Output file already exists. Choose a different output path or remove the existing file."}
+
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with output_file.open("wb") as handle:
             handle.write(header)
@@ -256,8 +259,10 @@ def decrypt_file(input_path: str, output_path: str, password: str) -> Dict[str, 
             }
 
         output_file = Path(output_path)
-        output_file.parent.mkdir(parents=True, exist_ok=True)
+        if output_file.exists():
+            return {"success": False, "message": "Output file already exists. Choose a different output path or remove the existing file."}
 
+        output_file.parent.mkdir(parents=True, exist_ok=True)
         with output_file.open("wb") as handle:
             handle.write(plaintext)
 
