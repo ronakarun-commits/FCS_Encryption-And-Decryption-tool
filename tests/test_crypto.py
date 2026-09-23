@@ -74,10 +74,19 @@ def test_header_validation_and_aad_rejection():
         assert parsed["iterations"] >= 600000
         assert len(parsed["salt"]) == 16
         assert len(parsed["nonce"]) == 12
+        assert parsed["file_size"] == len(src.read_bytes())
 
-        aad = build_aad(1, 1, b"header.txt", 6)
+        aad = build_aad(1, 1, b"header.txt", len(src.read_bytes()))
         assert isinstance(aad, bytes)
         assert len(aad) > 0
+
+        tampered_header = bytearray(enc.read_bytes())
+        tampered_header[40] ^= 0x01
+        tampered_path = Path(tmpdir) / "tampered_header.enc"
+        tampered_path.write_bytes(tampered_header)
+        tampered = decrypt_file(str(tampered_path), str(Path(tmpdir) / "tampered_header.out"), "PassWord!1")
+        assert tampered["success"] is False
+        assert "Authentication failed" in tampered["message"]
 
 
 def test_empty_file_round_trip():

@@ -25,7 +25,8 @@ SALT_LENGTH = 16
 NONCE_LENGTH = 12
 AES_KEY_LENGTH = 32
 MAX_FILENAME_LENGTH = 65535
-HEADER_MIN_SIZE = 4 + 1 + 1 + 4 + SALT_LENGTH + NONCE_LENGTH + 2
+FILE_SIZE_LENGTH = 8
+HEADER_MIN_SIZE = 4 + 1 + 1 + 4 + SALT_LENGTH + NONCE_LENGTH + 2 + FILE_SIZE_LENGTH
 
 
 class SFETError(Exception):
@@ -58,7 +59,15 @@ def build_aad(version: int, kdf_id: int, filename_bytes: bytes, file_size: int) 
     return struct.pack("!BBH", version, kdf_id, len(filename_bytes)) + filename_bytes + struct.pack("!Q", file_size)
 
 
-def create_sfet_header(version: int, kdf_id: int, iterations: int, salt: bytes, nonce: bytes, filename_bytes: bytes) -> bytes:
+def create_sfet_header(
+    version: int,
+    kdf_id: int,
+    iterations: int,
+    salt: bytes,
+    nonce: bytes,
+    filename_bytes: bytes,
+    file_size: int,
+) -> bytes:
     """Build the custom SFET header for an encrypted file."""
     if version != VERSION:
         raise ValueError(f"Unsupported SFET version: {version}")
@@ -72,6 +81,8 @@ def create_sfet_header(version: int, kdf_id: int, iterations: int, salt: bytes, 
         raise ValueError("Nonce must be exactly 12 bytes.")
     if not isinstance(filename_bytes, (bytes, bytearray)):
         raise TypeError("filename_bytes must be bytes-like.")
+    if file_size < 0:
+        raise ValueError("file_size must be non-negative.")
 
     filename_bytes = bytes(filename_bytes)
     if len(filename_bytes) > MAX_FILENAME_LENGTH:
@@ -83,6 +94,7 @@ def create_sfet_header(version: int, kdf_id: int, iterations: int, salt: bytes, 
     header.extend(bytes(salt))
     header.extend(bytes(nonce))
     header.extend(struct.pack("!H", len(filename_bytes)))
+    header.extend(struct.pack("!Q", file_size))
     header.extend(filename_bytes)
     return bytes(header)
 
@@ -121,11 +133,12 @@ def parse_sfet_header(data: bytes) -> Dict[str, Any]:
         raise InvalidHeaderError("Invalid nonce length in SFET header.")
 
     filename_length = struct.unpack("!H", blob[38:40])[0]
-    if 40 + filename_length > len(blob):
+    file_size = struct.unpack("!Q", blob[40:48])[0]
+    if 48 + filename_length > len(blob):
         raise InvalidHeaderError("Filename length exceeds the size of the encrypted file.")
 
-    filename_bytes = blob[40:40 + filename_length]
-    ciphertext = blob[40 + filename_length:]
+    filename_bytes = blob[48:48 + filename_length]
+    ciphertext = blob[48 + filename_length:]
     if len(ciphertext) < 16:
         raise InvalidHeaderError("Encrypted file is truncated or missing the authentication tag.")
 
@@ -136,6 +149,8 @@ def parse_sfet_header(data: bytes) -> Dict[str, Any]:
         "iterations": iterations,
         "salt": salt,
         "nonce": nonce,
+        "filename_length": filename_length,
+        "file_size": file_size,
         "filename": filename_bytes,
         "ciphertext": ciphertext,
     }
@@ -184,7 +199,7 @@ def encrypt_file(input_path: str, output_path: str, password: str) -> Dict[str, 
         aad = build_aad(VERSION, KDF_ID, filename_bytes, len(plaintext))
         ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad)
 
-        header = create_sfet_header(VERSION, KDF_ID, KDF_ITERATIONS, salt, nonce, filename_bytes)
+        header = create_sfet_header(VERSION, KDF_ID, KDF_ITERATIONS, salt, nonce, filename_bytes, len(plaintext))
 
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -224,12 +239,17 @@ def decrypt_file(input_path: str, output_path: str, password: str) -> Dict[str, 
         if len(ciphertext) < 16:
             return {"success": False, "message": "Encrypted file is truncated or invalid."}
 
-        original_length = len(ciphertext) - 16
-        aad = build_aad(parsed["version"], parsed["kdf_id"], parsed["filename"], original_length)
+        aad = build_aad(parsed["version"], parsed["kdf_id"], parsed["filename"], parsed["file_size"])
 
         try:
             plaintext = AESGCM(key).decrypt(parsed["nonce"], ciphertext, aad)
         except InvalidTag:
+            return {
+                "success": False,
+                "message": "Authentication failed. The encrypted file may have been modified or corrupted.",
+            }
+
+        if len(plaintext) != parsed["file_size"]:
             return {
                 "success": False,
                 "message": "Authentication failed. The encrypted file may have been modified or corrupted.",
