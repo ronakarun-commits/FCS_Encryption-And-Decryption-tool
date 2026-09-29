@@ -1,29 +1,37 @@
 """Security-focused file encryption helpers for the Secure File Encryption Tool.
 
-This module implements the Phase 1 cryptographic core required by the mini-project.
-It intentionally keeps the encryption logic separate from the GUI and includes
-validation around the custom SFET file format, PBKDF2 key derivation, and AES-GCM
-authentication checks.
+This module keeps the cryptographic core separate from the GUI and includes
+validation for the SFET file format, key derivation, and AES-GCM authentication.
+The implementation is intentionally simple enough for learning while still using
+secure defaults and safer file handling.
 """
 
 from __future__ import annotations
 
-import hashlib
 import os
 import struct
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from features.kdf_utils import (
+    ARGON2_KDF_ID,
+    ARGON2_TIME_COST,
+    AES_KEY_LENGTH,
+    KDF_ID,
+    KDF_ITERATIONS,
+    SALT_LENGTH,
+    derive_key as kdf_derive_key,
+    get_kdf_name as kdf_get_kdf_name,
+    is_argon2_available as kdf_is_argon2_available,
+)
+from features.safe_io import write_atomic_file as safe_write_atomic_file
+
 MAGIC = b"SFET"
 VERSION = 1
-KDF_ID = 1
-KDF_ITERATIONS = 600_000
-SALT_LENGTH = 16
 NONCE_LENGTH = 12
-AES_KEY_LENGTH = 32
 MAX_FILENAME_LENGTH = 65535
 FILE_SIZE_LENGTH = 8
 HEADER_MIN_SIZE = 4 + 1 + 1 + 4 + SALT_LENGTH + NONCE_LENGTH + 2 + FILE_SIZE_LENGTH
@@ -41,12 +49,23 @@ class AuthenticationFailureError(SFETError):
     """Raised when AES-GCM authentication fails."""
 
 
-def build_aad(version: int, kdf_id: int, filename_bytes: bytes, file_size: int) -> bytes:
-    """Construct deterministic authenticated metadata for AES-GCM.
+def is_argon2_available() -> bool:
+    """Return True when Argon2id support is available in the Python environment."""
+    return kdf_is_argon2_available()
 
-    The metadata includes the file format version, KDF identifier, original filename,
-    and the original file size. The same inputs must always produce the same AAD.
-    """
+
+def write_atomic_file(path: Union[str, Path], content: bytes) -> Path:
+    """Write a file atomically so partial output is avoided on errors."""
+    return safe_write_atomic_file(path, content)
+
+
+def get_kdf_name(kdf_id: int) -> str:
+    """Return a readable label for the selected key-derivation function."""
+    return kdf_get_kdf_name(kdf_id)
+
+
+def build_aad(version: int, kdf_id: int, filename_bytes: bytes, file_size: int) -> bytes:
+    """Construct deterministic authenticated metadata for AES-GCM."""
     if not isinstance(filename_bytes, (bytes, bytearray)):
         raise TypeError("filename_bytes must be bytes-like.")
 
@@ -71,10 +90,10 @@ def create_sfet_header(
     """Build the custom SFET header for an encrypted file."""
     if version != VERSION:
         raise ValueError(f"Unsupported SFET version: {version}")
-    if kdf_id != KDF_ID:
+    if kdf_id not in (KDF_ID, ARGON2_KDF_ID):
         raise ValueError(f"Unsupported KDF ID: {kdf_id}")
     if iterations <= 0:
-        raise ValueError("PBKDF2 iteration count must be positive.")
+        raise ValueError("Key-derivation iteration count must be positive.")
     if not isinstance(salt, (bytes, bytearray)) or len(bytes(salt)) != SALT_LENGTH:
         raise ValueError("Salt must be exactly 16 bytes.")
     if not isinstance(nonce, (bytes, bytearray)) or len(bytes(nonce)) != NONCE_LENGTH:
@@ -117,12 +136,12 @@ def parse_sfet_header(data: bytes) -> Dict[str, Any]:
         raise InvalidHeaderError(f"Unsupported SFET version: {version}")
 
     kdf_id = blob[5]
-    if kdf_id != KDF_ID:
+    if kdf_id not in (KDF_ID, ARGON2_KDF_ID):
         raise InvalidHeaderError(f"Unsupported KDF ID: {kdf_id}")
 
     iterations = struct.unpack("!I", blob[6:10])[0]
     if iterations <= 0:
-        raise InvalidHeaderError("Invalid PBKDF2 iteration count.")
+        raise InvalidHeaderError("Invalid key-derivation iteration count.")
 
     salt = blob[10:26]
     if len(salt) != SALT_LENGTH:
@@ -156,29 +175,18 @@ def parse_sfet_header(data: bytes) -> Dict[str, Any]:
     }
 
 
-def derive_key(password: str, salt: bytes, iterations: int = KDF_ITERATIONS) -> bytes:
-    """Derive a 256-bit AES key using PBKDF2-HMAC-SHA256."""
-    if not isinstance(password, str) or not password:
-        raise ValueError("Password must be a non-empty string.")
-    if not isinstance(salt, (bytes, bytearray)):
-        raise TypeError("Salt must be bytes.")
-
-    salt_bytes = bytes(salt)
-    if len(salt_bytes) != SALT_LENGTH:
-        raise ValueError("Salt length must be exactly 16 bytes.")
-    if iterations <= 0:
-        raise ValueError("PBKDF2 iteration count must be greater than zero.")
-
-    return hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt_bytes,
-        iterations,
-        dklen=AES_KEY_LENGTH,
-    )
+def derive_key(password: str, salt: bytes, iterations: int = KDF_ITERATIONS, kdf_id: int = KDF_ID) -> bytes:
+    """Derive a 256-bit AES key using PBKDF2 or Argon2id."""
+    return kdf_derive_key(password, salt, iterations, kdf_id)
 
 
-def encrypt_file(input_path: str, output_path: str, password: str) -> Dict[str, Any]:
+def encrypt_file(
+    input_path: str,
+    output_path: str,
+    password: str,
+    kdf_id: int = KDF_ID,
+    iterations: int | None = None,
+) -> Dict[str, Any]:
     """Encrypt a file using AES-256-GCM and store it in the custom SFET format."""
     try:
         input_file = Path(input_path)
@@ -193,22 +201,27 @@ def encrypt_file(input_path: str, output_path: str, password: str) -> Dict[str, 
         if len(filename_bytes) > MAX_FILENAME_LENGTH:
             return {"success": False, "message": "Filename is too long to encrypt."}
 
+        if kdf_id not in (KDF_ID, ARGON2_KDF_ID):
+            return {"success": False, "message": f"Unsupported KDF ID: {kdf_id}"}
+
+        selected_iterations = KDF_ITERATIONS if iterations is None else iterations
+        if kdf_id == ARGON2_KDF_ID and iterations is None:
+            selected_iterations = ARGON2_TIME_COST
+
         salt = os.urandom(SALT_LENGTH)
         nonce = os.urandom(NONCE_LENGTH)
-        key = derive_key(password, salt, KDF_ITERATIONS)
-        aad = build_aad(VERSION, KDF_ID, filename_bytes, len(plaintext))
+        key = derive_key(password, salt, selected_iterations, kdf_id)
+        aad = build_aad(VERSION, kdf_id, filename_bytes, len(plaintext))
         ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad)
 
-        header = create_sfet_header(VERSION, KDF_ID, KDF_ITERATIONS, salt, nonce, filename_bytes, len(plaintext))
+        header = create_sfet_header(VERSION, kdf_id, selected_iterations, salt, nonce, filename_bytes, len(plaintext))
 
         output_file = Path(output_path)
         if output_file.exists():
             return {"success": False, "message": "Output file already exists. Choose a different output path or remove the existing file."}
 
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        with output_file.open("wb") as handle:
-            handle.write(header)
-            handle.write(ciphertext)
+        payload = header + ciphertext
+        write_atomic_file(output_file, payload)
 
         return {
             "success": True,
@@ -225,7 +238,11 @@ def encrypt_file(input_path: str, output_path: str, password: str) -> Dict[str, 
         return {"success": False, "message": "Unexpected cryptographic error while encrypting the file."}
 
 
-def decrypt_file(input_path: str, output_path: str, password: str) -> Dict[str, Any]:
+def decrypt_file(
+    input_path: str,
+    output_path: str,
+    password: str,
+) -> Dict[str, Any]:
     """Decrypt an SFET file only after authenticated AES-GCM verification succeeds."""
     try:
         encrypted_file = Path(input_path)
@@ -236,7 +253,7 @@ def decrypt_file(input_path: str, output_path: str, password: str) -> Dict[str, 
 
         blob = encrypted_file.read_bytes()
         parsed = parse_sfet_header(blob)
-        key = derive_key(password, parsed["salt"], parsed["iterations"])
+        key = derive_key(password, parsed["salt"], parsed["iterations"], parsed["kdf_id"])
 
         ciphertext = parsed["ciphertext"]
         if len(ciphertext) < 16:
@@ -262,9 +279,7 @@ def decrypt_file(input_path: str, output_path: str, password: str) -> Dict[str, 
         if output_file.exists():
             return {"success": False, "message": "Output file already exists. Choose a different output path or remove the existing file."}
 
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        with output_file.open("wb") as handle:
-            handle.write(plaintext)
+        write_atomic_file(output_file, plaintext)
 
         return {
             "success": True,
@@ -285,10 +300,15 @@ def decrypt_file(input_path: str, output_path: str, password: str) -> Dict[str, 
 
 __all__ = [
     "AES_KEY_LENGTH",
+    "ARGON2_KDF_ID",
+    "ARGON2_TIME_COST",
     "KDF_ITERATIONS",
     "MAGIC",
     "VERSION",
     "KDF_ID",
+    "is_argon2_available",
+    "write_atomic_file",
+    "get_kdf_name",
     "SFETError",
     "InvalidHeaderError",
     "AuthenticationFailureError",

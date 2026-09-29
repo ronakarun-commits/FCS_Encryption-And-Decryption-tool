@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,8 +6,10 @@ from pathlib import Path
 from crypto_utils import (
     build_aad,
     decrypt_file,
+    derive_key,
     encrypt_file,
     parse_sfet_header,
+    write_atomic_file,
 )
 
 
@@ -50,6 +53,23 @@ class CryptoCoreTests(unittest.TestCase):
             fail = decrypt_file(str(tampered_path), str(Path(tmpdir) / "tampered.out"), "CorrectPass!99")
             self.assertFalse(fail["success"])
             self.assertIn("Authentication failed", fail["message"])
+
+    def test_atomic_file_write_and_argon2id_key_derivation(self):
+        try:
+            import argon2  # noqa: F401
+        except ImportError:
+            self.skipTest("argon2-cffi is not installed")
+
+        salt = os.urandom(16)
+        key = derive_key("StrongPass!123", salt, kdf_id=2)
+        self.assertEqual(len(key), 32)
+        self.assertNotEqual(key, b"" * 32)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "secure.bin"
+            write_atomic_file(output, b"hello")
+            self.assertEqual(output.read_bytes(), b"hello")
+            self.assertFalse((Path(tmpdir) / ".secure.bin.tmp").exists())
 
     def test_header_validation_and_aad_rejection(self):
         with tempfile.TemporaryDirectory() as tmpdir:

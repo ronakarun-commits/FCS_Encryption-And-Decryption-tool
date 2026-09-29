@@ -11,6 +11,14 @@ import logging
 from pathlib import Path
 from typing import Optional, Union
 
+from features.password_validation import validate_password_strength as validate_password_strength_impl
+from features.safe_io import read_file_in_chunks as read_file_in_chunks_impl
+
+
+def read_file_in_chunks(file_path: Union[str, Path], chunk_size: int = 65536):
+    """Yield file data in small chunks to support memory-friendly processing."""
+    return read_file_in_chunks_impl(file_path, chunk_size)
+
 
 def calculate_sha256(file_path: Union[str, Path]) -> str:
     """Return the SHA-256 hex digest for a file."""
@@ -19,34 +27,14 @@ def calculate_sha256(file_path: Union[str, Path]) -> str:
         raise FileNotFoundError(f"File not found: {path}")
 
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
+    for chunk in read_file_in_chunks(path):
+        digest.update(chunk)
     return digest.hexdigest()
 
 
 def validate_password_strength(password: str) -> dict:
     """Provide a simple usability-focused password strength score."""
-    if not isinstance(password, str):
-        return {"score": 0, "label": "Invalid", "criteria": []}
-
-    checks = {
-        "minimum_length": len(password) >= 8,
-        "uppercase": any(ch.isupper() for ch in password),
-        "lowercase": any(ch.islower() for ch in password),
-        "digit": any(ch.isdigit() for ch in password),
-        "special": any(not ch.isalnum() for ch in password),
-    }
-
-    score = sum(1 for value in checks.values() if value)
-    if score <= 2:
-        label = "Weak"
-    elif score <= 4:
-        label = "Medium"
-    else:
-        label = "Strong"
-
-    return {"score": score, "label": label, "criteria": checks}
+    return validate_password_strength_impl(password)
 
 
 def ensure_parent_directory(path: Union[str, Path]) -> Path:
