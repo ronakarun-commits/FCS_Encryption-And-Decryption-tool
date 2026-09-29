@@ -32,6 +32,8 @@ To decrypt a file, select the `.enc` file and enter the same password used durin
 
 This is an educational local application. Users should keep strong passwords and retain backups of important original files.
 
+The repository implements password-based key derivation with PBKDF2 or Argon2id, atomic temporary-file writing, chunked file-reading helpers, password-strength validation, file-size information, safe output handling, threaded operations, and activity logging. Together, these components provide a complete local encryption workflow while keeping the implementation understandable for learning.
+
 ## Project Title
 Secure File Encryption and Decryption Tool
 
@@ -52,15 +54,6 @@ To build a secure and beginner-friendly tool that encrypts and decrypts files wh
 - Refuse decryption if tampering or a wrong password is detected.
 - Provide a simple Tkinter GUI.
 - Keep the code easy to read and learn from.
-
-## New Features Added
-- Argon2id support as an optional stronger password-based key derivation method
-- Temp-file + atomic write flow to avoid partially-written files
-- Chunked file reading for simpler memory-friendly processing
-- Better GUI validation for missing input and weak passwords
-- File-size display in the interface
-- Improved default output handling and safer user interaction
-- Cleaner beginner-friendly code structure
 
 ## Core Features
 - AES-256-GCM encryption
@@ -85,10 +78,12 @@ To build a secure and beginner-friendly tool that encrypts and decrypts files wh
 - threading
 
 ## System Architecture
-The application is divided into a few Python modules:
+The repository is divided into focused modules so each part of the application has a clear responsibility:
 
 - main.py: starts the GUI
-- gui.py: handles the desktop interface and worker threads
+- gui.py: compatibility entry point for the desktop interface
+- ui/: contains the Tkinter window, controls, and display helpers
+- features/: contains reusable KDF, password-validation, safe-I/O, and batch-operation modules
 - crypto_utils.py: implements encryption, decryption, validation, and key derivation
 - file_utils.py: handles hashing, path logic, and logging
 - tests/test_crypto.py: validates critical behavior
