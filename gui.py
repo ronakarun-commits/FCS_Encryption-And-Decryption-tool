@@ -209,12 +209,22 @@ class SecureFileApp(tk.Tk):
             log_activity(f"File {action}ed: {Path(output_path).name}")
             if action == "decrypt":
                 try:
-                    original_hash = calculate_sha256(self.input_path_var.get().strip())
                     decrypted_hash = calculate_sha256(output_path)
-                    verification = "PASSED" if original_hash == decrypted_hash else "FAILED"
-                    self.sha_var.set(
-                        f"Original File SHA-256: {original_hash}\nDecrypted File SHA-256: {decrypted_hash}\nIntegrity Verification: {verification}"
-                    )
+                    encrypted_path = Path(self.input_path_var.get().strip())
+                    parsed = parse_sfet_header(encrypted_path.read_bytes())
+                    original_name = parsed["filename"].decode("utf-8", "surrogateescape")
+                    original_path = encrypted_path.with_name(original_name)
+
+                    if original_path.exists() and original_path.is_file() and original_path.resolve() != Path(output_path).resolve():
+                        original_hash = calculate_sha256(original_path)
+                        verification = "PASSED" if original_hash == decrypted_hash else "FAILED"
+                        self.sha_var.set(
+                            f"Original File SHA-256: {original_hash}\nDecrypted File SHA-256: {decrypted_hash}\nIntegrity Verification: {verification}"
+                        )
+                    else:
+                        self.sha_var.set(
+                            f"Decrypted File SHA-256: {decrypted_hash}\nIntegrity Verification: PASSED (AES-GCM authentication succeeded)"
+                        )
                 except Exception:
                     self.sha_var.set("SHA-256: unable to verify file integrity after decryption.")
             messagebox.showinfo("Success", result.get("message", "Operation completed successfully."))
