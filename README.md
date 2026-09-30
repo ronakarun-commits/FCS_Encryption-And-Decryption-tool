@@ -113,6 +113,14 @@ The project uses a custom binary format called SFET (Secure File Encryption Tool
 pip install -r requirements.txt
 ```
 
+### Quick setup on a new PC (single command)
+
+```bash
+bash setup_and_run.sh
+```
+
+This script creates a virtual environment, installs required modules, and runs the app.
+
 ## Usage
 Run the application with:
 
