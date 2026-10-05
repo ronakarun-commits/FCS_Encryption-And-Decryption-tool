@@ -152,6 +152,22 @@ class SecureFileApp(tk.Tk):
             return ARGON2_KDF_ID
         return KDF_ID
 
+    @staticmethod
+    def _get_original_filename(encrypted_path: Path) -> str:
+        """Read and sanitize the original filename from an SFET header."""
+        try:
+            parsed = parse_sfet_header(encrypted_path.read_bytes())
+            original_name = parsed["filename"].decode("utf-8", "surrogateescape")
+            original_name = Path(original_name).name
+            if not original_name:
+                raise ValueError("Encrypted file contains an invalid original filename.")
+            return original_name
+        except Exception:
+            fallback = encrypted_path.stem
+            if fallback.endswith(".enc"):
+                fallback = fallback[:-4]
+            return fallback or "decrypted_file"
+
     def _resolve_output_for_operation(self, mode: str) -> Path:
         input_path = self.input_path_var.get().strip()
         if not input_path:
@@ -159,22 +175,20 @@ class SecureFileApp(tk.Tk):
 
         selected_output = self.output_dir_var.get().strip()
         if mode == "encrypt":
+            input_file = Path(input_path)
+            default_name = input_file.name + ".enc"
             if selected_output:
                 candidate = Path(selected_output)
                 if candidate.exists() and candidate.is_dir():
-                    return candidate / (Path(input_path).name + ".enc")
+                    return candidate / default_name
                 if candidate.suffix:
                     return candidate
-                return candidate / (Path(input_path).name + ".enc")
-            return Path(input_path).with_name(Path(input_path).name + ".enc")
+                return candidate / default_name
+            return input_file.with_name(default_name)
 
         if mode == "decrypt":
             encrypted = Path(input_path)
-            try:
-                parsed = parse_sfet_header(encrypted.read_bytes())
-                original_name = parsed["filename"].decode("utf-8", "surrogateescape")
-            except Exception:
-                original_name = Path(input_path).stem.replace(".enc", "")
+            original_name = self._get_original_filename(encrypted)
 
             if selected_output:
                 candidate = Path(selected_output)
@@ -212,9 +226,19 @@ class SecureFileApp(tk.Tk):
             messagebox.showerror("Error", str(exc))
             return
 
-        if output_path.exists() and not messagebox.askyesno("Overwrite?", f"The output file already exists:\n{output_path}\n\nDo you want to overwrite it?"):
-            self.status_var.set("Operation cancelled: output file already exists.")
-            return
+        if output_path.exists():
+            overwrite = messagebox.askyesno(
+                "Overwrite?",
+                f"The output file already exists:\n\n{output_path}\n\nDo you want to overwrite it?",
+            )
+            if not overwrite:
+                self.status_var.set("Operation cancelled: output file already exists.")
+                return
+            try:
+                output_path.unlink()
+            except OSError as exc:
+                messagebox.showerror("Error", f"Unable to replace existing output file:\n{exc}")
+                return
 
         self._set_busy(True)
         self.status_var.set(f"Working on {action}...")
@@ -241,16 +265,20 @@ class SecureFileApp(tk.Tk):
         if result.get("success"):
             self.status_var.set(result.get("message", "Operation completed successfully."))
             log_activity(f"File {action}ed: {Path(output_path).name}")
-            if action == "decrypt":
+            if action == "encrypt":
+                self.sha_var.set("AES-256-GCM: encryption successful\nAuthentication tag: generated")
+            elif action == "decrypt":
                 try:
-                    original_hash = calculate_sha256(self.input_path_var.get().strip())
                     decrypted_hash = calculate_sha256(output_path)
-                    verification = "PASSED" if original_hash == decrypted_hash else "FAILED"
                     self.sha_var.set(
-                        f"Original File SHA-256: {original_hash}\nDecrypted File SHA-256: {decrypted_hash}\nIntegrity Verification: {verification}"
+                        "AES-GCM Authentication: PASSED\n"
+                        f"Decrypted File SHA-256:\n{decrypted_hash}"
                     )
                 except Exception:
-                    self.sha_var.set("SHA-256: unable to verify file integrity after decryption.")
+                    self.sha_var.set(
+                        "AES-GCM Authentication: PASSED\n"
+                        "SHA-256: unable to calculate decrypted file hash."
+                    )
             messagebox.showinfo("Success", result.get("message", "Operation completed successfully."))
             return
 
@@ -267,3 +295,7 @@ class SecureFileApp(tk.Tk):
 def main() -> None:
     app = SecureFileApp()
     app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
